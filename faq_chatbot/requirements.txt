@@ -1,4 +1,0 @@
-flask>=3.0
-scikit-learn>=1.4
-nltk>=3.8
-anthropic>=0.40
