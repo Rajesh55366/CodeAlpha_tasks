@@ -1,91 +1,109 @@
-# Northbound Bikes — FAQ Chatbot
+# AI Music Generation with LSTM
 
-A small FAQ chatbot: it matches a user's question against a set of known
-FAQs using NLP preprocessing (NLTK) and TF-IDF + cosine similarity
-(scikit-learn), then returns the best-matching answer with a confidence
-score. Includes a simple chat web UI.
+Generates new piano music by training an LSTM (Long Short-Term Memory) network
+on a corpus of MIDI files, then sampling new note sequences and rendering
+them back to a playable `.mid` file.
 
-## How it works
+Pipeline: **collect MIDI data → preprocess with music21 → train LSTM → generate → save as MIDI**
 
-1. **Collect FAQs** — `data/faqs.csv` holds `question,answer` pairs
-   (sample topic: a bike shop). Swap in your own CSV for any other topic.
-2. **Preprocess** (`chatbot.py: preprocess()`) — lowercase, strip
-   punctuation, tokenize, remove stopwords, and lemmatize with NLTK.
-3. **Vectorize & match** — FAQ questions are TF-IDF vectorized
-   (unigrams + bigrams). An incoming message is cleaned the same way,
-   vectorized, and compared against every FAQ with cosine similarity.
-4. **Respond** — the highest-scoring FAQ's answer is returned if its score
-   clears `min_confidence` (default 0.15); otherwise a fallback message
-   is shown along with a couple of near-miss alternatives.
-5. **Chat UI** (`templates/index.html`, `static/`) — a Flask-served page
-   that posts messages to `/api/chat` and renders the reply with a
-   confidence "gauge."
+## Project structure
 
-## Setup
+```
+music_gen/
+├── requirements.txt
+├── data/
+│   ├── raw_midi/        # .mid files go here (downloaded or your own)
+│   └── processed/        # preprocessed note-sequence data (auto-generated)
+├── models/                # saved model checkpoints (auto-generated)
+├── output/                # generated .mid files land here
+└── src/
+    ├── download_data.py   # fetches a small public-domain MIDI dataset
+    ├── preprocess.py      # MIDI -> note/chord sequences using music21
+    ├── model.py            # LSTM architecture (Keras/TensorFlow)
+    ├── train.py             # trains the model on preprocessed data
+    └── generate.py         # samples new sequences and writes a .mid file
+```
+
+## 1. Setup
 
 ```bash
+cd music_gen
+python -m venv venv
+source venv/bin/activate      # on Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-The first run downloads a few small NLTK corpora automatically
-(punkt, stopwords, wordnet) — this needs internet access once.
+`music21` also needs a MIDI player registered if you want to auto-play audio
+(optional — not required to just generate the .mid file).
 
-## Run
+## 2. Get MIDI data
 
-**Command line:**
+Two options, both handled by `download_data.py`:
+
+- **Classical piano set** (default, small, good for a first run): clones a
+  public GitHub repo of classical piano MIDI files into `data/raw_midi/`.
+- **MAESTRO v3.0.0** (bigger, higher quality, ~120 hours of piano performances):
+  pass `--dataset maestro` to download and unzip a subset from Magenta's
+  public MAESTRO bucket.
+
 ```bash
-python chatbot.py
+python src/download_data.py --dataset classical      # quick start (~200 files)
+# or
+python src/download_data.py --dataset maestro --limit 50   # 50 MAESTRO pieces
 ```
 
-**Web chat UI:**
+You can also just drop your own `.mid`/`.midi` files into `data/raw_midi/`.
+
+## 3. Preprocess
+
+Parses every MIDI file into a flat sequence of notes/chords with `music21`,
+builds a vocabulary, and saves fixed-length input/output training sequences.
+
 ```bash
-python app.py
+python src/preprocess.py
 ```
-Then open http://127.0.0.1:5000 in your browser.
 
-## Using your own FAQs
+Outputs `data/processed/sequences.npz` and `data/processed/vocab.pkl`.
 
-Replace `data/faqs.csv` with your own two-column CSV (`question,answer`
-header row required), or point `FAQChatbot(...)` at a different path in
-`app.py` / `chatbot.py`.
+## 4. Train
 
-## General AI fallback
+```bash
+python src/train.py --epochs 100 --batch-size 64
+```
 
-The FAQ matcher only answers what's in `data/faqs.csv`. To make it answer
-*any* question, low-confidence FAQ matches are handed off to Claude
-(Anthropic's API).
+Checkpoints (`.keras` files) are saved to `models/` after every epoch that
+improves loss, plus a final `models/final_model.keras`.
 
-1. Get a free API key at https://console.anthropic.com/settings/keys
-2. Set it as an environment variable before running the app:
+## 5. Generate music
 
-   **Windows (PowerShell):**
-   ```powershell
-   $env:ANTHROPIC_API_KEY = "sk-ant-...your-key..."
-   python app.py
-   ```
-   (This only lasts for the current PowerShell session — you'll need to
-   set it again next time you open a new terminal, unless you add it to
-   your system environment variables permanently.)
+```bash
+python src/generate.py --model models/final_model.keras --length 500 --output output/generated.mid
+```
 
-   **macOS/Linux:**
-   ```bash
-   export ANTHROPIC_API_KEY="sk-ant-...your-key..."
-   python app.py
-   ```
+This samples a new note sequence from the trained model and converts it back
+into a MIDI file you can play in any media player, DAW, or `music21`'s
+built-in player.
 
-Without a key set, the app still works — FAQ matches answer normally, and
-anything outside the FAQ list gets a message asking you to configure the
-key, instead of a real AI answer.
+## Notes on the approach
 
-Note the Anthropic API is pay-as-you-go (small free credit for new
-accounts, then billed per request) — it's not unlimited/free like using
-Claude.ai in a browser.
+- **Representation**: each MIDI file is flattened into a sequence of tokens,
+  where a token is either a single pitch (`"64"`) or a chord written as
+  dot-joined pitches (`"60.64.67"`), plus the note's duration. This is the
+  standard `music21`-based encoding used in most LSTM music-generation
+  tutorials (e.g. Skuldur's Classical-Piano-Composer).
+- **Model**: a stacked LSTM with dropout, trained to predict the next token
+  given the previous `SEQUENCE_LENGTH` tokens (categorical cross-entropy,
+  Adam optimizer). This is intentionally the "simple, well-documented"
+  architecture rather than a GAN — easier to train and debug from scratch.
+- **Sampling**: generation uses temperature-based sampling from the softmax
+  output so the output isn't purely greedy (which tends to loop).
 
-## Notes / limitations
+## Extending this
 
-- TF-IDF + cosine similarity matches on shared *words*, not meaning — it
-  won't know "open" means "hours" unless both words appear somewhere in
-  your FAQ set. For stronger semantic matching, swap the vectorizer for
-  sentence embeddings (e.g. `sentence-transformers`).
-- `min_confidence` in `app.py` controls how strict matching is — lower it
-  to answer more (riskier) questions, raise it to fall back more often.
+- Swap `model.py`'s architecture for a GAN (e.g. a MidiNet/MuseGAN-style
+  generator + discriminator) if you want to explore that route later —
+  `preprocess.py`'s output format stays the same.
+- Add instrument-aware / multi-track handling (currently flattens to a single
+  melodic/chordal line, which is standard for a first project).
+- Condition generation on a musical style/genre by training separate models
+  per genre folder.

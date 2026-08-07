@@ -1,4 +1,5 @@
-flask>=3.0
-scikit-learn>=1.4
-nltk>=3.8
-anthropic>=0.40
+tensorflow>=2.15,<2.17
+music21>=9.1
+numpy>=1.24
+tqdm>=4.66
+requests>=2.31
